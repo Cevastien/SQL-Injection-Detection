@@ -79,3 +79,36 @@ export type ModelManagementResponse = {
   message: string;
   model_info: ModelInfo;
 };
+
+export type ConfusionMatrixData = {
+  tn: number;
+  fp: number;
+  fn: number;
+  tp: number;
+};
+
+export type ModelMetric = {
+  model: string;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1?: number;
+  f1_score?: number;
+  rocAuc?: number;
+  roc_auc?: number;
+  confusion_matrix?: ConfusionMatrixData | null;
+};
+
+export type MetricsResponse = {
+  models: ModelMetric[];
+  hybrid_confusion_matrix: ConfusionMatrixData;
+  source?: string;
+  dataset?: string;
+  last_updated?: string | null;
+  rows_evaluated?: number | null;
+  rows_after_cleaning?: number | null;
+  removed_noise_records?: number | null;
+  duplicate_records_removed?: number | null;
+  evaluation_basis?: string | null;
+  dynamic?: boolean;
+};

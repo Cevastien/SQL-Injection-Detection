@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,34 +19,21 @@ from model_loader import (
 )
 
 
-OFFICIAL_MODEL_METRICS: List[Dict[str, float | str]] = [
-    {
-        "model": "Random Forest",
-        "accuracy": 99.4914,
-        "precision": 99.9547,
-        "recall": 98.6595,
-        "f1_score": 99.3029,
-        "roc_auc": 0.99746,
-    },
-    {
-        "model": "XGBoost",
-        "accuracy": 99.4094,
-        "precision": 99.9093,
-        "recall": 98.4808,
-        "f1_score": 99.1899,
-        "roc_auc": 0.99741,
-    },
-    {
-        "model": "Hybrid Ensemble",
-        "accuracy": 99.4750,
-        "precision": 99.9547,
-        "recall": 98.6148,
-        "f1_score": 99.2803,
-        "roc_auc": 0.99753,
-    },
-]
+def _as_percent(value: object) -> float:
+    numeric = float(value)
+    return numeric * 100 if numeric <= 1 else numeric
 
-HYBRID_CONFUSION_MATRIX = {"tn": 3856, "fp": 1, "fn": 31, "tp": 2207}
+
+def _metric_payload(model_name: str, metrics: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "model": model_name,
+        "accuracy": _as_percent(metrics.get("accuracy", 0.0)),
+        "precision": _as_percent(metrics.get("precision", 0.0)),
+        "recall": _as_percent(metrics.get("recall", 0.0)),
+        "f1": _as_percent(metrics.get("f1_score", metrics.get("f1", 0.0))),
+        "rocAuc": float(metrics.get("roc_auc", metrics.get("rocAuc", 0.0))),
+        "confusion_matrix": metrics.get("confusion_matrix"),
+    }
 
 
 class QueryRequest(BaseModel):
@@ -235,24 +222,29 @@ def debug_predict(payload: QueryRequest) -> Dict[str, object]:
 
 @app.get("/metrics")
 def metrics() -> Dict[str, object]:
-    metadata = model_service.metrics_metadata()
-    if metadata.get("metrics"):
-        return {
-            "models": [
-                {"model": "Random Forest", **metadata["metrics"]["random_forest"]},
-                {"model": "XGBoost", **metadata["metrics"]["xgboost"]},
-                {"model": "Hybrid Ensemble", **metadata["metrics"]["hybrid_ensemble"]},
-            ],
-            "hybrid_confusion_matrix": metadata["metrics"]["hybrid_ensemble"]["confusion_matrix"],
-            "source": metadata.get("source_notebook", "SQL_Attack_Detection_30k_.ipynb"),
-            "dataset": metadata.get("dataset_name", "Modified_SQL_Dataset / 30k dataset"),
-            "last_updated": metadata.get("exported_at"),
-        }
+    metadata = model_service.runtime_upload_metadata.get("metrics_metadata")
+    if not isinstance(metadata, dict) or not metadata.get("metrics"):
+        raise HTTPException(
+            status_code=409,
+            detail="Upload the model artifact ZIP and dataset CSV before viewing model performance metrics.",
+        )
 
     return {
-        "models": OFFICIAL_MODEL_METRICS,
-        "hybrid_confusion_matrix": HYBRID_CONFUSION_MATRIX,
-        "source": "Official results supplied from the project notebook; backend artifacts exported from SQL_Attack_Detection_30k_.ipynb",
+        "models": [
+            _metric_payload("Random Forest", metadata["metrics"]["random_forest"]),
+            _metric_payload("XGBoost", metadata["metrics"]["xgboost"]),
+            _metric_payload("Hybrid Ensemble", metadata["metrics"]["hybrid_ensemble"]),
+        ],
+        "hybrid_confusion_matrix": metadata["metrics"]["hybrid_ensemble"]["confusion_matrix"],
+        "source": metadata.get("source_notebook", "Uploaded artifacts evaluated by FastAPI"),
+        "dataset": metadata.get("dataset_name", "Uploaded dataset"),
+        "last_updated": metadata.get("exported_at"),
+        "rows_evaluated": metadata.get("rows_evaluated"),
+        "rows_after_cleaning": metadata.get("rows_after_cleaning"),
+        "removed_noise_records": metadata.get("removed_noise_records"),
+        "duplicate_records_removed": metadata.get("duplicate_records_removed"),
+        "evaluation_basis": metadata.get("evaluation_basis"),
+        "dynamic": True,
     }
 
 

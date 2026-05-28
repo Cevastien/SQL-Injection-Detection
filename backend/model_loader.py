@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import joblib
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
 
 from explainability import (
     build_explanation,
@@ -85,12 +88,16 @@ def _latest_artifact_updated_at() -> str | None:
 class SQLiModelService:
     def __init__(self) -> None:
         self.hybrid_model = None
+        self.rf_model = None
+        self.xgb_model = None
         self.vectorizer = None
         self.runtime_upload_metadata: Dict[str, object] = {}
         self.active_artifact_status = {filename: False for filename in REQUIRED_ARTIFACTS}
 
     def reset(self) -> None:
         self.hybrid_model = None
+        self.rf_model = None
+        self.xgb_model = None
         self.vectorizer = None
         self.runtime_upload_metadata = {}
         self.active_artifact_status = {filename: False for filename in REQUIRED_ARTIFACTS}
@@ -126,6 +133,8 @@ class SQLiModelService:
             "runtime_model_source": runtime_upload.get("source"),
             "runtime_dataset_used": runtime_upload.get("dataset_name"),
             "runtime_loaded_at": runtime_upload.get("last_updated"),
+            "runtime_metrics_active": bool(runtime_upload.get("metrics_metadata")),
+            "runtime_metrics_basis": runtime_upload.get("metrics_basis"),
             "model_classes": self.model_classes(),
             "model_loaded_status": self.hybrid_model is not None,
             "vectorizer_loaded_status": self.vectorizer is not None,
@@ -157,6 +166,8 @@ class SQLiModelService:
 
         self.vectorizer = _load_serialized_artifact(VECTORIZER_PATH)
         self.hybrid_model = _load_serialized_artifact(HYBRID_MODEL_PATH)
+        self.rf_model = _load_serialized_artifact(RF_MODEL_PATH)
+        self.xgb_model = _load_serialized_artifact(XGB_MODEL_PATH)
         self.runtime_upload_metadata = {
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "dataset_name": self.metrics_metadata().get("dataset_name", "Bundled model artifacts"),
@@ -315,14 +326,18 @@ class SQLiModelService:
 
         hybrid_model = _load_serialized_artifact(artifact_paths["hybrid_model.pkl"])
         vectorizer = _load_serialized_artifact(artifact_paths["tfidf_vectorizer.pkl"])
-        _load_serialized_artifact(artifact_paths["rf_model.pkl"])
-        _load_serialized_artifact(artifact_paths["xgb_model.pkl"])
+        rf_model = _load_serialized_artifact(artifact_paths["rf_model.pkl"])
+        xgb_model = _load_serialized_artifact(artifact_paths["xgb_model.pkl"])
 
         if not hasattr(hybrid_model, "predict") or not hasattr(hybrid_model, "predict_proba"):
             raise InvalidModelArtifacts("Upload failed. hybrid_model.pkl must provide predict() and predict_proba().")
 
         if not hasattr(vectorizer, "transform"):
             raise InvalidModelArtifacts("Upload failed. tfidf_vectorizer.pkl must provide transform().")
+
+        for model_name, model in {"rf_model.pkl": rf_model, "xgb_model.pkl": xgb_model}.items():
+            if not hasattr(model, "predict") or not hasattr(model, "predict_proba"):
+                raise InvalidModelArtifacts(f"Upload failed. {model_name} must provide predict() and predict_proba().")
 
         try:
             validation_vector = vectorizer.transform([preprocess_text(VALIDATION_QUERY)])
@@ -338,16 +353,112 @@ class SQLiModelService:
                 "Upload failed. The uploaded model returned an invalid prediction shape during validation."
             )
 
+    def _load_evaluation_dataset(self, dataset_path: Path) -> Tuple[List[str], List[int], int, int, int, int]:
+        try:
+            dataset = pd.read_csv(dataset_path)
+        except Exception as exc:
+            raise InvalidModelArtifacts("Upload failed. Dataset CSV could not be read for metric evaluation.") from exc
+
+        if "Query" in dataset.columns and "Sentence" not in dataset.columns:
+            dataset = dataset.rename(columns={"Query": "Sentence"})
+
+        missing_columns = {"Sentence", "Label"} - set(dataset.columns)
+        if missing_columns:
+            raise InvalidModelArtifacts(
+                "Upload failed. Dataset CSV must contain Sentence/Query and Label columns for dynamic metrics."
+            )
+
+        dataset = dataset.dropna(subset=["Sentence", "Label"]).copy()
+        labels = pd.to_numeric(dataset["Label"], errors="coerce")
+        valid_label_mask = labels.isin([0, 1])
+        dataset = dataset.loc[valid_label_mask].copy()
+        dataset["Label"] = labels.loc[valid_label_mask].astype(int)
+
+        if dataset.empty:
+            raise InvalidModelArtifacts("Upload failed. Dataset CSV has no valid labeled rows for metric evaluation.")
+
+        noisy_mask = dataset["Sentence"].astype(str).str.contains("UNION SELECT", case=False, na=False) & (dataset["Label"] == 0)
+        removed_noise = int(noisy_mask.sum())
+        dataset = dataset.loc[~noisy_mask].copy()
+
+        dataset["Processed_Sentence"] = dataset["Sentence"].apply(preprocess_text)
+        before_dedup = len(dataset)
+        dataset = dataset.drop_duplicates(subset=["Processed_Sentence"]).copy()
+        dropped_duplicates = before_dedup - len(dataset)
+
+        if dataset["Label"].nunique() < 2:
+            raise InvalidModelArtifacts("Upload failed. Dataset CSV must contain both benign and attack labels for metric evaluation.")
+
+        _, evaluation_queries, _, evaluation_labels = train_test_split(
+            dataset["Processed_Sentence"],
+            dataset["Label"],
+            test_size=0.20,
+            random_state=42,
+            stratify=dataset["Label"],
+        )
+
+        return (
+            evaluation_queries.tolist(),
+            evaluation_labels.astype(int).tolist(),
+            int(len(dataset)),
+            int(len(evaluation_queries)),
+            removed_noise,
+            int(dropped_duplicates),
+        )
+
+    @staticmethod
+    def _evaluate_model(model: object, vectorized_queries, labels: List[int]) -> Dict[str, object]:
+        predictions = model.predict(vectorized_queries)
+        probabilities = model.predict_proba(vectorized_queries)[:, 1]
+        tn, fp, fn, tp = confusion_matrix(labels, predictions, labels=[0, 1]).ravel()
+
+        return {
+            "accuracy": float(accuracy_score(labels, predictions)),
+            "precision": float(precision_score(labels, predictions, zero_division=0)),
+            "recall": float(recall_score(labels, predictions, zero_division=0)),
+            "f1_score": float(f1_score(labels, predictions, zero_division=0)),
+            "roc_auc": float(roc_auc_score(labels, probabilities)) if len(set(labels)) > 1 else 0.0,
+            "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+        }
+
+    def evaluate_uploaded_dataset(self, dataset_path: Path) -> Dict[str, object]:
+        if self.vectorizer is None or self.hybrid_model is None or self.rf_model is None or self.xgb_model is None:
+            raise InvalidModelArtifacts("Upload failed. Models must be loaded before dynamic metrics can be computed.")
+
+        processed_queries, labels, rows_after_cleaning, rows_evaluated, removed_noise, dropped_duplicates = self._load_evaluation_dataset(dataset_path)
+        vectorized_queries = self.vectorizer.transform(processed_queries)
+
+        return {
+            "source_notebook": "Uploaded artifacts evaluated by FastAPI",
+            "dataset_name": dataset_path.name,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "rows_evaluated": rows_evaluated,
+            "rows_after_cleaning": rows_after_cleaning,
+            "removed_noise_records": removed_noise,
+            "duplicate_records_removed": dropped_duplicates,
+            "evaluation_basis": "Uploaded dataset CSV cleaned and evaluated on a stratified 20% test split using the active uploaded model artifacts.",
+            "metrics": {
+                "random_forest": self._evaluate_model(self.rf_model, vectorized_queries, labels),
+                "xgboost": self._evaluate_model(self.xgb_model, vectorized_queries, labels),
+                "hybrid_ensemble": self._evaluate_model(self.hybrid_model, vectorized_queries, labels),
+            },
+        }
+
     def load_runtime_artifact_set(self, artifact_paths: Dict[str, Path], dataset_path: Path | None = None) -> Dict[str, object]:
         self.validate_artifact_set(artifact_paths)
 
         metadata = self.metrics_metadata()
         self.hybrid_model = _load_serialized_artifact(artifact_paths["hybrid_model.pkl"])
         self.vectorizer = _load_serialized_artifact(artifact_paths["tfidf_vectorizer.pkl"])
+        self.rf_model = _load_serialized_artifact(artifact_paths["rf_model.pkl"])
+        self.xgb_model = _load_serialized_artifact(artifact_paths["xgb_model.pkl"])
+        dynamic_metrics = self.evaluate_uploaded_dataset(dataset_path) if dataset_path else None
         self.runtime_upload_metadata = {
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "dataset_name": dataset_path.name if dataset_path else metadata.get("dataset_name", "Temporary uploaded artifacts"),
             "source": "Uploaded through Model Management",
+            "metrics_metadata": dynamic_metrics,
+            "metrics_basis": dynamic_metrics.get("evaluation_basis") if dynamic_metrics else None,
         }
         self.active_artifact_status = {filename: True for filename in REQUIRED_ARTIFACTS}
 

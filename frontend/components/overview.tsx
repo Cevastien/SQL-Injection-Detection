@@ -1,6 +1,7 @@
 "use client";
 
 import { IconCrosshair, IconShieldCheck, IconSum, IconTarget } from "@tabler/icons-react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -15,11 +16,10 @@ import {
 } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { modelMetrics } from "@/lib/data";
 import { formatPercent } from "@/lib/ui-helpers";
 import { displayAttackTypeLabel } from "@/lib/ui-labels";
 import { cn } from "@/lib/utils";
-import type { DetectionLog } from "@/lib/types";
+import type { DetectionLog, MetricsResponse, ModelMetric } from "@/lib/types";
 
 const chartStyle = {
   grid: "var(--border)",
@@ -48,42 +48,63 @@ const threatColors = [
   "#8f5a1a"
 ];
 
-const metricChartData = modelMetrics.map((metric) => ({
-  model: metric.model,
-  Accuracy: metric.accuracy,
-  Precision: metric.precision,
-  Recall: metric.recall,
-  F1: metric.f1
-}));
+type NormalizedMetric = {
+  model: string;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1: number;
+};
 
-const metricByModel = Object.fromEntries(modelMetrics.map((metric) => [metric.model, metric]));
+function normalizeMetric(metric: ModelMetric): NormalizedMetric {
+  return {
+    model: metric.model,
+    accuracy: metric.accuracy,
+    precision: metric.precision,
+    recall: metric.recall,
+    f1: metric.f1 ?? metric.f1_score ?? 0
+  };
+}
 
-const mobileMetricChartData = [
-  {
-    metric: "Accuracy",
-    rf: metricByModel["Random Forest"]?.accuracy ?? 0,
-    xgb: metricByModel.XGBoost?.accuracy ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.accuracy ?? 0
-  },
-  {
-    metric: "Precision",
-    rf: metricByModel["Random Forest"]?.precision ?? 0,
-    xgb: metricByModel.XGBoost?.precision ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.precision ?? 0
-  },
-  {
-    metric: "Recall",
-    rf: metricByModel["Random Forest"]?.recall ?? 0,
-    xgb: metricByModel.XGBoost?.recall ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.recall ?? 0
-  },
-  {
-    metric: "F1",
-    rf: metricByModel["Random Forest"]?.f1 ?? 0,
-    xgb: metricByModel.XGBoost?.f1 ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.f1 ?? 0
-  }
-];
+function buildMetricChartData(metrics: NormalizedMetric[]) {
+  return metrics.map((metric) => ({
+    model: metric.model,
+    Accuracy: metric.accuracy,
+    Precision: metric.precision,
+    Recall: metric.recall,
+    F1: metric.f1
+  }));
+}
+
+function buildMobileMetricChartData(metrics: NormalizedMetric[]) {
+  const metricByModel = Object.fromEntries(metrics.map((metric) => [metric.model, metric]));
+  return [
+    {
+      metric: "Accuracy",
+      rf: metricByModel["Random Forest"]?.accuracy ?? 0,
+      xgb: metricByModel.XGBoost?.accuracy ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.accuracy ?? 0
+    },
+    {
+      metric: "Precision",
+      rf: metricByModel["Random Forest"]?.precision ?? 0,
+      xgb: metricByModel.XGBoost?.precision ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.precision ?? 0
+    },
+    {
+      metric: "Recall",
+      rf: metricByModel["Random Forest"]?.recall ?? 0,
+      xgb: metricByModel.XGBoost?.recall ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.recall ?? 0
+    },
+    {
+      metric: "F1",
+      rf: metricByModel["Random Forest"]?.f1 ?? 0,
+      xgb: metricByModel.XGBoost?.f1 ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.f1 ?? 0
+    }
+  ];
+}
 
 const baselineFill = "var(--subtle-foreground)";
 const baselineAltFill = "var(--muted-foreground)";
@@ -123,7 +144,59 @@ function StatCard({
   );
 }
 
-export function Overview({ logs }: { logs: DetectionLog[] }) {
+export function Overview({ logs, modelReady }: { logs: DetectionLog[]; modelReady: boolean }) {
+  const [metricsResponse, setMetricsResponse] = useState<MetricsResponse | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!modelReady) {
+      setMetricsResponse(null);
+      setMetricsError(null);
+      setMetricsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setMetricsLoading(true);
+    setMetricsError(null);
+
+    fetch("/api/metrics", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail ?? "Unable to load model metrics");
+        }
+        return data as MetricsResponse;
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setMetricsResponse(data);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMetricsError(error instanceof Error ? error.message : "Unable to load model metrics");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMetricsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [modelReady]);
+
+  const modelMetrics = useMemo(
+    () => (metricsResponse?.models ?? []).map(normalizeMetric),
+    [metricsResponse]
+  );
+  const metricChartData = useMemo(() => buildMetricChartData(modelMetrics), [modelMetrics]);
+  const mobileMetricChartData = useMemo(() => buildMobileMetricChartData(modelMetrics), [modelMetrics]);
+
   const total = logs.length;
   const finalDecisionFor = (log: DetectionLog) => log.final_security_decision ?? log.prediction;
   const isAttack = (log: DetectionLog) => finalDecisionFor(log).toLowerCase().includes("attack");
@@ -162,6 +235,16 @@ export function Overview({ logs }: { logs: DetectionLog[] }) {
             <CardTitle>Metric Comparison</CardTitle>
           </CardHeader>
           <CardContent>
+            {!modelReady || metricsLoading || metricsError || !modelMetrics.length ? (
+              <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                {!modelReady
+                  ? "Upload the model ZIP and dataset CSV to show model performance."
+                  : metricsLoading
+                    ? "Loading uploaded model metrics..."
+                    : metricsError ?? "No uploaded model metrics are available yet."}
+              </div>
+            ) : (
+              <>
             <div className="sm:hidden">
               <div className="mb-3 flex flex-wrap gap-3 text-[11px] text-subtle-foreground">
                 <span className="flex items-center gap-1.5">
@@ -240,6 +323,8 @@ export function Overview({ logs }: { logs: DetectionLog[] }) {
               </ResponsiveContainer>
               </div>
             </div>
+              </>
+            )}
           </CardContent>
         </Card>
 

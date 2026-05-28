@@ -1,59 +1,87 @@
 "use client";
+import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { confusionMatrix, modelMetrics } from "@/lib/data";
+import type { ConfusionMatrixData, MetricsResponse, ModelMetric } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const metricChartData = modelMetrics.map((metric) => ({
-  model: metric.model,
-  Accuracy: metric.accuracy,
-  Precision: metric.precision,
-  Recall: metric.recall,
-  F1: metric.f1
-}));
+type NormalizedMetric = {
+  model: string;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  rocAuc: number;
+};
 
-const metricByModel = Object.fromEntries(modelMetrics.map((metric) => [metric.model, metric]));
+function normalizeMetric(metric: ModelMetric): NormalizedMetric {
+  return {
+    model: metric.model,
+    accuracy: metric.accuracy,
+    precision: metric.precision,
+    recall: metric.recall,
+    f1: metric.f1 ?? metric.f1_score ?? 0,
+    rocAuc: metric.rocAuc ?? metric.roc_auc ?? 0
+  };
+}
 
-const mobileMetricChartData = [
-  {
-    metric: "Accuracy",
-    rf: metricByModel["Random Forest"]?.accuracy ?? 0,
-    xgb: metricByModel.XGBoost?.accuracy ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.accuracy ?? 0
-  },
-  {
-    metric: "Precision",
-    rf: metricByModel["Random Forest"]?.precision ?? 0,
-    xgb: metricByModel.XGBoost?.precision ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.precision ?? 0
-  },
-  {
-    metric: "Recall",
-    rf: metricByModel["Random Forest"]?.recall ?? 0,
-    xgb: metricByModel.XGBoost?.recall ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.recall ?? 0
-  },
-  {
-    metric: "F1",
-    rf: metricByModel["Random Forest"]?.f1 ?? 0,
-    xgb: metricByModel.XGBoost?.f1 ?? 0,
-    hybrid: metricByModel["Hybrid Ensemble"]?.f1 ?? 0
-  }
-];
+function buildMetricChartData(metrics: NormalizedMetric[]) {
+  return metrics.map((metric) => ({
+    model: metric.model,
+    Accuracy: metric.accuracy,
+    Precision: metric.precision,
+    Recall: metric.recall,
+    F1: metric.f1
+  }));
+}
 
-const rocData = modelMetrics.map((metric) => ({
-  model: metric.model,
-  "ROC-AUC": metric.rocAuc
-}));
+function buildMobileMetricChartData(metrics: NormalizedMetric[]) {
+  const metricByModel = Object.fromEntries(metrics.map((metric) => [metric.model, metric]));
+  return [
+    {
+      metric: "Accuracy",
+      rf: metricByModel["Random Forest"]?.accuracy ?? 0,
+      xgb: metricByModel.XGBoost?.accuracy ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.accuracy ?? 0
+    },
+    {
+      metric: "Precision",
+      rf: metricByModel["Random Forest"]?.precision ?? 0,
+      xgb: metricByModel.XGBoost?.precision ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.precision ?? 0
+    },
+    {
+      metric: "Recall",
+      rf: metricByModel["Random Forest"]?.recall ?? 0,
+      xgb: metricByModel.XGBoost?.recall ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.recall ?? 0
+    },
+    {
+      metric: "F1",
+      rf: metricByModel["Random Forest"]?.f1 ?? 0,
+      xgb: metricByModel.XGBoost?.f1 ?? 0,
+      hybrid: metricByModel["Hybrid Ensemble"]?.f1 ?? 0
+    }
+  ];
+}
 
-const mobileRocData = modelMetrics.map((metric) => ({
-  model: metric.model === "Random Forest" ? "RF" : metric.model === "Hybrid Ensemble" ? "Hybrid" : "XGB",
-  "ROC-AUC": metric.rocAuc,
-  fullModel: metric.model
-}));
+function buildRocData(metrics: NormalizedMetric[]) {
+  return metrics.map((metric) => ({
+    model: metric.model,
+    "ROC-AUC": metric.rocAuc
+  }));
+}
+
+function buildMobileRocData(metrics: NormalizedMetric[]) {
+  return metrics.map((metric) => ({
+    model: metric.model === "Random Forest" ? "RF" : metric.model === "Hybrid Ensemble" ? "Hybrid" : "XGB",
+    "ROC-AUC": metric.rocAuc,
+    fullModel: metric.model
+  }));
+}
 
 const chartStyle = {
   grid: "var(--border)",
@@ -85,6 +113,61 @@ type ModelPerformanceProps = {
 };
 
 export function ModelPerformance({ checkingModel, modelReady, onGoToModelManagement }: ModelPerformanceProps) {
+  const [metricsResponse, setMetricsResponse] = useState<MetricsResponse | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!modelReady) {
+      setMetricsResponse(null);
+      setMetricsError(null);
+      setMetricsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setMetricsLoading(true);
+    setMetricsError(null);
+
+    fetch("/api/metrics", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail ?? "Unable to load model metrics");
+        }
+        return data as MetricsResponse;
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setMetricsResponse(data);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMetricsError(error instanceof Error ? error.message : "Unable to load model metrics");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMetricsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [modelReady]);
+
+  const modelMetrics = useMemo(
+    () => (metricsResponse?.models ?? []).map(normalizeMetric),
+    [metricsResponse]
+  );
+  const metricChartData = useMemo(() => buildMetricChartData(modelMetrics), [modelMetrics]);
+  const mobileMetricChartData = useMemo(() => buildMobileMetricChartData(modelMetrics), [modelMetrics]);
+  const rocData = useMemo(() => buildRocData(modelMetrics), [modelMetrics]);
+  const mobileRocData = useMemo(() => buildMobileRocData(modelMetrics), [modelMetrics]);
+  const confusionMatrix = metricsResponse?.hybrid_confusion_matrix;
+
   if (checkingModel) {
     return (
       <PerformanceGate
@@ -105,13 +188,49 @@ export function ModelPerformance({ checkingModel, modelReady, onGoToModelManagem
     );
   }
 
+  if (metricsLoading) {
+    return (
+      <PerformanceGate
+        title="Loading Uploaded Metrics"
+        description="The dashboard is evaluating the active uploaded model artifacts and dataset before drawing the charts."
+      />
+    );
+  }
+
+  if (metricsError) {
+    return (
+      <PerformanceGate
+        title="Metrics Unavailable"
+        description={metricsError}
+        actionLabel="Go to Model Management"
+        onAction={onGoToModelManagement}
+      />
+    );
+  }
+
+  if (!modelMetrics.length || !confusionMatrix) {
+    return (
+      <PerformanceGate
+        title="No Dynamic Metrics"
+        description="Upload a model artifact ZIP and dataset CSV so the dashboard can calculate performance metrics for the active model."
+        actionLabel="Go to Model Management"
+        onAction={onGoToModelManagement}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Official Model Comparison</CardTitle>
+          <CardTitle>{metricsResponse?.dynamic ? "Uploaded Model Comparison" : "Model Comparison"}</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {metricsResponse?.dynamic
+              ? `Calculated from ${metricsResponse.dataset ?? "the uploaded dataset"} on the stratified 20% test split${metricsResponse.rows_evaluated ? ` (${metricsResponse.rows_evaluated.toLocaleString()} rows)` : ""}.`
+              : "Loaded from the available model metrics file."}
+          </p>
           <Table className="min-w-[720px]">
             <TableHeader>
               <TableRow>
@@ -232,7 +351,7 @@ export function ModelPerformance({ checkingModel, modelReady, onGoToModelManagem
             <CardTitle>Hybrid Confusion Matrix</CardTitle>
           </CardHeader>
           <CardContent>
-            <ConfusionMatrix />
+            <ConfusionMatrix confusionMatrix={confusionMatrix} />
           </CardContent>
         </Card>
       </div>
@@ -310,7 +429,7 @@ function PerformanceGate({
   );
 }
 
-function ConfusionMatrix() {
+function ConfusionMatrix({ confusionMatrix }: { confusionMatrix: ConfusionMatrixData }) {
   const total = confusionMatrix.tn + confusionMatrix.fp + confusionMatrix.fn + confusionMatrix.tp;
   const accuracy = total ? ((confusionMatrix.tn + confusionMatrix.tp) / total) * 100 : 0;
   const falsePositiveRate = confusionMatrix.tn + confusionMatrix.fp

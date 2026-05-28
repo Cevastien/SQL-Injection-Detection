@@ -323,7 +323,7 @@ export function DashboardShell() {
 
         <section className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 sm:px-4 md:px-8 md:py-6">
           <div key={activeView} className="view-motion">
-            {activeView === "overview" && <Overview logs={logs} />}
+            {activeView === "overview" && <Overview logs={logs} modelReady={modelReady} />}
             {activeView === "analyzer" && <QueryAnalyzer onResult={addLog} />}
             {activeView === "explainability" && <ExplainabilityPanel latestLog={latestLog} />}
             {activeView === "performance" && (
