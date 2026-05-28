@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.next/
+out/
+logs/
+.env
+.env.local
+.npmrc
+.vscode/
+backend/models/archive/
+frontend/.vercel/
+npm-debug.log*
+*.log
+.vercel

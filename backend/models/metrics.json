@@ -1,0 +1,78 @@
+{
+  "source_notebook": "SQL_Attack_Detection_30k_.ipynb",
+  "dataset_name": "Modified_SQL_Dataset / 30k dataset",
+  "dataset_path": "C:\\Users\\USER\\Downloads\\Modified_SQL_Dataset.csv\\Modified_SQL_Dataset.csv",
+  "exported_at": "2026-05-26T17:40:38.702888+00:00",
+  "initial_rows": 30919,
+  "removed_noisy_benign_union_select_rows": 215,
+  "rows_after_duplicate_removal": 30513,
+  "test_size": 0.2,
+  "random_state": 42,
+  "stratified": true,
+  "tfidf": {
+    "analyzer": "char_wb",
+    "ngram_range": [
+      2,
+      4
+    ],
+    "max_features": 15000,
+    "sublinear_tf": true,
+    "min_df": 2
+  },
+  "random_forest": {
+    "n_estimators": 200,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "n_jobs": -1
+  },
+  "xgboost": {
+    "n_estimators": 200,
+    "max_depth": 6,
+    "learning_rate": 0.1,
+    "scale_pos_weight": 1.7185655418198018,
+    "eval_metric": "logloss",
+    "random_state": 42,
+    "n_jobs": -1
+  },
+  "metrics": {
+    "random_forest": {
+      "accuracy": 0.9972144846796658,
+      "precision": 0.9995515695067264,
+      "recall": 0.9928730512249443,
+      "f1_score": 0.9962011173184357,
+      "roc_auc": 0.99959220478432,
+      "confusion_matrix": {
+        "tn": 3857,
+        "fp": 1,
+        "fn": 16,
+        "tp": 2229
+      }
+    },
+    "xgboost": {
+      "accuracy": 0.9957398000983123,
+      "precision": 0.9982038616973506,
+      "recall": 0.9902004454342984,
+      "f1_score": 0.9941860465116279,
+      "roc_auc": 0.9993859980302983,
+      "confusion_matrix": {
+        "tn": 3854,
+        "fp": 4,
+        "fn": 22,
+        "tp": 2223
+      }
+    },
+    "hybrid_ensemble": {
+      "accuracy": 0.9965590693101753,
+      "precision": 0.9991023339317774,
+      "recall": 0.9915367483296214,
+      "f1_score": 0.9953051643192489,
+      "roc_auc": 0.9996430060003164,
+      "confusion_matrix": {
+        "tn": 3856,
+        "fp": 2,
+        "fn": 19,
+        "tp": 2226
+      }
+    }
+  }
+}
