@@ -5,7 +5,6 @@ A machine-learning SQL injection detector using a hybrid Random Forest + XGBoost
 ## Links
 
 - Live dashboard: https://sqli-rho.vercel.app/
-- Backend API: https://sqli-sentinel-api.onrender.com/
 - Model and dataset files: https://drive.google.com/drive/folders/1qtb3YTUzbmE7ohLjInDcx7naNUMmGyUz
 
 ## 5-Step Setup
@@ -13,8 +12,8 @@ A machine-learning SQL injection detector using a hybrid Random Forest + XGBoost
 ### 1. Clone the repository
 
 ```powershell
-git clone https://github.com/Cevastien/SQLI.git
-cd SQLI
+git clone https://github.com/Cevastien/SQL-Injection-Detection.git
+cd SQL-Injection-Detection
 ```
 
 ### 2. Start the FastAPI backend
