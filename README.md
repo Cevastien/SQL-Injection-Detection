@@ -6,7 +6,7 @@ A machine-learning SQL injection detector using a hybrid Random Forest + XGBoost
 
 - Live dashboard: https://sqli-rho.vercel.app/
 - Model and dataset files: https://drive.google.com/drive/folders/1qtb3YTUzbmE7ohLjInDcx7naNUMmGyUz
-- Training notebook: `notebooks/SQL_Attack_Detection_30k.ipynb`
+- Training notebook: `notebooks/training_workspace/SQLI_Model_Training_Clean.ipynb`
 
 ## 5-Step Setup
 
